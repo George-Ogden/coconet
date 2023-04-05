@@ -1,0 +1,16 @@
+# cache files
+__pycache__/
+*.py[cod]
+
+# numpy arrays
+*.npy
+*.npz
+
+# midi files
+*.mid
+*.midi
+
+# notes
+notes.txt
+plan.txt
+references.txt
