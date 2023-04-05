@@ -86,3 +86,20 @@ class Jsb16thSeparatedDatasetFactory:
     @cached_property
     def test_dataset(self):
         return Jsb16thSeparatedDataset(self.data["test"])
+
+
+if __name__ == "__main__":
+    factory = Jsb16thSeparatedDatasetFactory()
+
+    # check lengths of all datasets
+    train_dataset = factory.train_dataset
+    for i in range(len(train_dataset)):
+        train_dataset[i]
+
+    val_dataset = factory.val_dataset
+    for i in range(len(val_dataset)):
+        val_dataset[i]
+
+    test_dataset = factory.test_dataset
+    for i in range(len(test_dataset)):
+        test_dataset[i]
