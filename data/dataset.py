@@ -68,3 +68,21 @@ class Jsb16thSeparatedDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.data)
+
+
+class Jsb16thSeparatedDatasetFactory:
+    def __init__(self, path: str = path):
+        with open(path) as f:
+            self.data = json.load(f)
+
+    @cached_property
+    def train_dataset(self):
+        return Jsb16thSeparatedDataset(self.data["train"])
+
+    @cached_property
+    def val_dataset(self):
+        return Jsb16thSeparatedDataset(self.data["valid"])
+
+    @cached_property
+    def test_dataset(self):
+        return Jsb16thSeparatedDataset(self.data["test"])
