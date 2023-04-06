@@ -25,6 +25,7 @@ class TrainingConfig:
     min_beta: float = 1e-3
     max_beta: float = 0.5
 
+
 class Trainer:
     def __init__(
         self,
@@ -80,11 +81,8 @@ class Trainer:
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        alphas = torch.ones_like(batch)
-        betas = torch.ones_like(batch)
-        for i in range(len(batch)):
-            alphas[i, batch[i] == 0] = self.cumulative_alphas[t[i]]
-            betas[i, batch[i] == 1] = self.cumulative_alphas[t[i]]
+        alphas = torch.where(batch == 0, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
+        betas = torch.where(batch == 1, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
         distribution = distributions.Beta(alphas, betas)
 
         # compute loss
