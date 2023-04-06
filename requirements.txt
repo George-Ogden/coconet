@@ -1,0 +1,5 @@
+diffusers[torch]
+numpy
+git+https://github.com/George-Ogden/pypianoroll # use my version
+tqdm
+wandb
