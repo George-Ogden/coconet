@@ -19,7 +19,7 @@ from model import model
 @dataclass
 class TrainingConfig:
     epochs: int = 100
-    batch_size: int = 16
+    batch_size: int = 8
     learning_rate: float = 1e-4
     diffusion_timesteps: int = 300
     min_beta: float = 1e-3
@@ -113,10 +113,10 @@ class Trainer:
 
             predictions = self.model(distribution, t).sample
         return predictions > 0
-    
+
     def train(self):
         wandb.init(project="coconet", config=self.config)
-        optimizer = torch.optim.SGD(self.model.parameters(), lr=self.config.learning_rate)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
         for epoch in range(self.config.epochs):
             # train
             self.model.train()
