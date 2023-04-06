@@ -1,4 +1,5 @@
 from torch.utils.data import Dataset
+import pypianoroll as pr
 import numpy as np
 
 from functools import cached_property
@@ -59,12 +60,10 @@ class Jsb16thSeparatedDataset(Dataset):
         if len(pianoroll) < self.info.piece_length:
             raise ValueError(f"Piece length is too short: {len(pianoroll)}")
         start = np.random.choice(
-            list(
-                range(
-                    len(pianoroll) % self.info.piece_length,
-                    len(pianoroll),
-                    self.info.piece_length,
-                )
+            np.arange(
+                len(pianoroll) % self.info.piece_length,
+                len(pianoroll),
+                self.info.piece_length,
             )
         )
         return pianoroll[start : start + self.info.piece_length]
