@@ -14,3 +14,13 @@ __pycache__/
 notes.txt
 plan.txt
 references.txt
+
+# wandb
+wandb/
+*.log
+*.yaml
+
+# checkpoints
+checkpoints/
+*.bin
+*.pth
