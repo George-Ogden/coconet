@@ -15,8 +15,8 @@ path = os.path.join(os.path.dirname(__file__), "jsb-chorales-16th.json")
 @dataclass
 class DatasetInfo:
     name: str = "Jsb16thSeparated"
-    min_pitch: int = 36
-    max_pitch: int = 81
+    min_pitch: int = 35
+    max_pitch: int = 82
     shortest_duration: float = 0.125
     num_instruments: int = 4
     piece_length: int = 64
