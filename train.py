@@ -117,7 +117,7 @@ class Trainer:
         return predictions > 0
     
     def train(self):
-        wandb.init(project="coconet", config=self.config, mode="disabled")
+        wandb.init(project="coconet", config=self.config)
         optimizer = torch.optim.SGD(self.model.parameters(), lr=self.config.learning_rate)
         for epoch in range(self.config.epochs):
             # train
