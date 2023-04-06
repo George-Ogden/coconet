@@ -47,17 +47,18 @@ class Trainer:
         cumprod_certainties = np.concatenate(((1,), np.cumprod(certainties)))
         delta_alphas = 0.5 + cumprod_certainties / 2
         self.alphas = torch.tensor(
-            1 / (.5 + certainties / 2) - 1, dtype=torch.float32
+            (1 + certainties) / (1 - certainties), dtype=torch.float32
         ).to(
             self.device
         )
         self.cumulative_alphas = torch.tensor(
-            1 / delta_alphas - 1, dtype=torch.float32
+            delta_alphas / (1 - delta_alphas), dtype=torch.float32
         ).to(
             self.device
         )
         # limit numerical instability
-        self.cumulative_alphas[self.cumulative_alphas < 1e-3] = 1e-3
+        self.alphas[self.alphas > 1e3] = 1e3
+        self.cumulative_alphas[self.cumulative_alphas > 1e3] = 1e3
 
         # split into train and val
         train_dataset, val_dataset = datasets
@@ -81,8 +82,8 @@ class Trainer:
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        alphas = torch.where(batch == 0, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
-        betas = torch.where(batch == 1, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
+        alphas = torch.where(batch == 1, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
+        betas = torch.where(batch == 0, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
         distribution = distributions.Beta(alphas, betas)
 
         # compute loss
@@ -107,8 +108,8 @@ class Trainer:
             binary_predictions = distributions.Bernoulli(torch.sigmoid(predictions)).sample()
             alphas = torch.ones_like(predictions)
             betas = torch.ones_like(predictions)
-            alphas[binary_predictions == 0] = self.alphas[t]
-            betas[binary_predictions == 1] = self.alphas[t]
+            alphas[binary_predictions == 1] = self.alphas[t]
+            betas[binary_predictions == 0] = self.alphas[t]
             distribution = distributions.Beta(alphas, betas).sample()
 
             predictions = self.model(distribution, t).sample
