@@ -26,6 +26,22 @@ class DatasetInfo:
     def num_pitches(self):
         return self.max_pitch - self.min_pitch + 1
 
+    def save_pianoroll(self, pianoroll: np.ndarray, filename: str):
+        pianoroll = np.pad(pianoroll, ((0, 0), (self.min_pitch, 127-self.max_pitch), (0, 0)), mode="constant", constant_values=0)
+        tracks = [pr.BinaryTrack(pianoroll=track) for track in pianoroll.transpose(2, 0, 1)]
+        multitrack = pr.Multitrack(tracks=tracks, tempo=self.qpm / 4, resolution=16)
+        multitrack.write(filename)
+    
+    def to_pianoroll(
+        self,
+        piece: List[List[int]],
+    ) -> np.ndarray:
+        pianoroll = np.zeros((len(piece), self.num_pitches, 4), dtype=bool)
+        for i, chord in enumerate(piece):
+            for j, track in enumerate(chord):
+                pianoroll[i, track - self.min_pitch, j] = True
+        return pianoroll
+
 
 class Jsb16thSeparatedDataset(Dataset):
     def __init__(self, data: List[List[List[int]]], info: DatasetInfo = DatasetInfo()):
@@ -37,17 +53,7 @@ class Jsb16thSeparatedDataset(Dataset):
         self.num_instruments = info.num_instruments
         self.qpm = info.qpm
 
-        self.data = [self.to_pianoroll(piece) for piece in data]
-
-    def to_pianoroll(
-        self,
-        piece: List[List[int]],
-    ) -> np.ndarray:
-        pianoroll = np.zeros((len(piece), self.info.num_pitches, 4), dtype=bool)
-        for i, chord in enumerate(piece):
-            for j, track in enumerate(chord):
-                pianoroll[i, track - self.min_pitch, j] = True
-        return pianoroll
+        self.data = [self.info.to_pianoroll(piece) for piece in data]
 
     def random_crop(self, pianoroll: np.ndarray) -> np.ndarray:
         if len(pianoroll) < self.info.piece_length:
