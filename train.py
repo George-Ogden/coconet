@@ -31,7 +31,7 @@ class Trainer:
         self,
         model: nn.Module,
         datasets: Tuple[Jsb16thSeparatedDataset, Jsb16thSeparatedDataset],
-        config: TrainingConfig,
+        config: TrainingConfig=TrainingConfig(),
     ):
         # setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
