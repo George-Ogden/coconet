@@ -61,7 +61,7 @@ class Model(nn.Module):
         )
         self.time_projection = TimestepEmbedding(
             in_channels=self.time_embedding_size,
-            time_embed_dim=info.num_instruments * info.piece_length * info.num_pitches
+            time_embed_dim=info.piece_length * info.num_pitches
         )
 
     def _make_input_layers(self, info: DatasetInfo):
@@ -69,7 +69,7 @@ class Model(nn.Module):
             [
                 nn.Sequential(
                     nn.Conv2d(
-                        in_channels=info.num_instruments * 2,
+                        in_channels=info.num_instruments + 1,
                         out_channels=self.filters,
                         kernel_size=3,
                         dilation=1,
@@ -134,7 +134,7 @@ class Model(nn.Module):
         # create time embedding same shape as pianoroll
         time_embedding = self.time_embedding(t)
         time_projection = self.time_projection(time_embedding)
-        time_projection = time_projection.reshape(pianoroll.shape)
+        time_projection = time_projection.reshape((len(pianoroll), 1, *pianoroll.shape[2:]))
 
         # concatenate pianoroll with time embedding
         pianoroll = torch.cat([pianoroll, time_projection], dim=1)
