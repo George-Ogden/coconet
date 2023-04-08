@@ -8,12 +8,11 @@ import torch
 from copy import copy
 from tqdm import tqdm
 import wandb
-import os
 
 from dataclasses import dataclass
-from typing import Tuple
+import os
 
-from data.dataset import Jsb16thSeparatedDataset, Jsb16thSeparatedDatasetFactory
+from data.dataset import Jsb16thSeparatedDataset, Jsb16thSeparatedDatasetFactory, DatasetInfo
 from model import Model
 
 
@@ -25,14 +24,15 @@ class TrainingConfig:
     diffusion_timesteps: int = 300
     min_beta: float = 1e-3
     max_beta: float = 0.5
+    save_directory: str = "checkpoints"
 
 
 class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        datasets: Tuple[Jsb16thSeparatedDataset, Jsb16thSeparatedDataset],
         config: TrainingConfig=TrainingConfig(),
+        dataset_config: DatasetInfo=DatasetInfo()
     ):
         # setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,6 +41,7 @@ class Trainer:
         self.model = model.to(self.device)
         self.config = copy(config)
         self.timesteps = config.diffusion_timesteps
+        self.save_directory = config.save_directory
 
         # precompute betas
         uncertainties = np.exp(np.linspace(np.log(config.min_beta), np.log(config.max_beta), config.diffusion_timesteps))
@@ -62,16 +63,7 @@ class Trainer:
         self.cumulative_alphas[self.cumulative_alphas > 1e3] = 1e3
 
         # split into train and val
-        train_dataset, val_dataset = datasets
-        self.dataset_config = copy(train_dataset.info)
-        self.train_loader = data.DataLoader(
-            train_dataset, batch_size=config.batch_size, shuffle=True, num_workers=4
-        )
-        self.val_loader = data.DataLoader(
-            [val_dataset[i] for i in range(len(val_dataset))],
-            batch_size=config.batch_size,
-            shuffle=False,
-        )
+        self.dataset_config = copy(dataset_config)
 
     @staticmethod
     def select(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
@@ -116,9 +108,20 @@ class Trainer:
             predictions = self.model(distribution, t)
         return predictions > 0
 
-    def train(self):
-        wandb.init(project="coconet", config=self.config, mode="disabled")
+    def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):
+        wandb.init(project="coconet", config=self.config, dir=self.save_directory)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
+
+        # set up dataloaders
+        self.train_loader = data.DataLoader(
+            train_dataset, batch_size=self.config.batch_size, shuffle=True, num_workers=4
+        )
+        self.val_loader = data.DataLoader(
+            [val_dataset[i] for i in range(len(val_dataset))],
+            batch_size=self.config.batch_size,
+            shuffle=False,
+        )
+
         for epoch in range(self.config.epochs):
             # train
             self.model.train()
@@ -145,10 +148,10 @@ class Trainer:
             samples = self.generate_samples(4)
 
             # save
-            os.makedirs(f"checkpoints/{epoch:04d}/samples/", exist_ok=True)
-            torch.save(model, f"checkpoints/{epoch:04d}/model.pth")
+            os.makedirs(f"{self.save_directory}/{epoch:04d}/samples/", exist_ok=True)
+            torch.save(model, f"{self.save_directory}/{epoch:04d}/model.pth")
             for i, sample in enumerate(samples):
-                self.dataset_config.save_pianoroll(sample.cpu().permute((2, 1, 0)).numpy(), f"checkpoints/{epoch:04d}/samples/{i:02d}.mid")
+                self.dataset_config.save_pianoroll(sample.cpu().permute((2, 1, 0)).numpy(), f"{self.save_directory}/{epoch:04d}/samples/{i:02d}.mid")
             wandb.log({"train_loss": train_loss, "val_loss": val_loss})
 
 
@@ -156,7 +159,9 @@ if __name__ == "__main__":
     factory = Jsb16thSeparatedDatasetFactory()
     model = Model(factory.info)
     trainer = Trainer(
-        model, [factory.train_dataset, factory.val_dataset], TrainingConfig()
+        model,
+        config=TrainingConfig(),
+        dataset_config=factory.info,
     )
 
-    trainer.train()
+    trainer.train(factory.train_dataset, factory.val_dataset)
