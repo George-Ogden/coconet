@@ -8,12 +8,13 @@ import torch
 from copy import copy
 from tqdm import tqdm
 import wandb
+import os
 
 from dataclasses import dataclass
 from typing import Tuple
 
 from data.dataset import Jsb16thSeparatedDataset, Jsb16thSeparatedDatasetFactory
-from model import model
+from model import Model
 
 
 @dataclass
@@ -87,7 +88,7 @@ class Trainer:
         distribution = distributions.Beta(alphas, betas)
 
         # compute loss
-        predicted = self.model(distribution.sample(), t).sample
+        predicted = self.model(distribution.sample(), t)
         loss = F.binary_cross_entropy_with_logits(predicted, batch)
         return loss
 
@@ -112,11 +113,11 @@ class Trainer:
             betas[binary_predictions == 0] = self.alphas[t]
             distribution = distributions.Beta(alphas, betas).sample()
 
-            predictions = self.model(distribution, t).sample
+            predictions = self.model(distribution, t)
         return predictions > 0
 
     def train(self):
-        wandb.init(project="coconet", config=self.config)
+        wandb.init(project="coconet", config=self.config, mode="disabled")
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
         for epoch in range(self.config.epochs):
             # train
@@ -144,14 +145,16 @@ class Trainer:
             samples = self.generate_samples(4)
 
             # save
-            model.save_pretrained(f"checkpoints/{epoch:04d}")
+            os.makedirs(f"checkpoints/{epoch:04d}/samples/", exist_ok=True)
+            torch.save(model, f"checkpoints/{epoch:04d}/model.pth")
             for i, sample in enumerate(samples):
-                self.dataset_config.save_pianoroll(sample.cpu().permute((2, 1, 0)).numpy(), f"checkpoints/{epoch:04d}/sample-{i:02d}.mid")
+                self.dataset_config.save_pianoroll(sample.cpu().permute((2, 1, 0)).numpy(), f"checkpoints/{epoch:04d}/samples/{i:02d}.mid")
             wandb.log({"train_loss": train_loss, "val_loss": val_loss})
 
 
 if __name__ == "__main__":
     factory = Jsb16thSeparatedDatasetFactory()
+    model = Model(factory.info)
     trainer = Trainer(
         model, [factory.train_dataset, factory.val_dataset], TrainingConfig()
     )
