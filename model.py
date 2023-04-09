@@ -74,8 +74,8 @@ class Model(nn.Module):
                         kernel_size=3,
                         dilation=1,
                         padding="same",
+                        bias=True
                     ),
-                    nn.BatchNorm2d(self.filters),
                 )
             ]
         )
@@ -96,8 +96,8 @@ class Model(nn.Module):
                             out_channels=self.filters,
                             kernel_size=3,
                             dilation=(pitch_dilation, time_dilation),
+                            bias=True
                         ),
-                        nn.BatchNorm2d(self.filters),
                     )
                 )
         return blocks
@@ -112,8 +112,8 @@ class Model(nn.Module):
                         kernel_size=2,
                         dilation=1,
                         padding=1,
+                        bias=True
                     ),
-                    nn.BatchNorm2d(self.filters),
                 ),
                 nn.Sequential(
                     SeparableConv2d(
@@ -122,6 +122,7 @@ class Model(nn.Module):
                         kernel_size=2,
                         dilation=1,
                         padding=0,
+                        bias=True
                     )
                 ),
             ]
