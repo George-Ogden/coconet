@@ -1,4 +1,3 @@
-import torch.distributions as distributions
 import torch.utils.data as data
 import torch.nn.functional as F
 import torch.nn as nn
@@ -19,11 +18,12 @@ from model import Model
 @dataclass
 class TrainingConfig:
     epochs: int = 100
-    batch_size: int = 8
+    batch_size: int = 1
     learning_rate: float = 1e-4
     diffusion_timesteps: int = 300
-    min_beta: float = 1e-3
-    max_beta: float = 0.5
+    min_beta: float = 1e-4
+    max_beta: float = 2e-2
+    sigmoid_max: float = 6.0
     save_directory: str = "checkpoints"
 
 
@@ -44,30 +44,20 @@ class Trainer:
         self.save_directory = config.save_directory
 
         # precompute betas
-        uncertainties = np.exp(np.linspace(np.log(config.min_beta), np.log(config.max_beta), config.diffusion_timesteps))
-        certainties = 1 - uncertainties
-        cumprod_certainties = np.concatenate(((1,), np.cumprod(certainties)))
-        delta_alphas = 0.5 + cumprod_certainties / 2
-        self.alphas = torch.tensor(
-            (1 + certainties) / (1 - certainties), dtype=torch.float32
-        ).to(
-            self.device
-        )
-        self.cumulative_alphas = torch.tensor(
-            delta_alphas / (1 - delta_alphas), dtype=torch.float32
-        ).to(
-            self.device
-        )
-        # limit numerical instability
-        self.alphas[self.alphas > 1e3] = 1e3
-        self.cumulative_alphas[self.cumulative_alphas > 1e3] = 1e3
+        betas = torch.linspace(config.min_beta, config.max_beta, config.diffusion_timesteps)
+        alphas = torch.tensor(1. - betas)
+        alphas_cumprod = torch.cumprod(alphas, axis=0)
+        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
+
+        self.sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod).to(self.device)
+        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod).to(self.device)
+
+        self.posterior_variance = (betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)).to(self.device)
+        self.mu = (betas * config.sigmoid_max / betas.sum()).to(self.device)
+        self.mu_cumsum = torch.cumsum(self.mu, dim=0)
 
         # split into train and val
         self.dataset_config = copy(dataset_config)
-
-    @staticmethod
-    def select(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
-        return torch.index_select(x, 0, idx)
 
     def compute_loss(self, batch: torch.Tensor) -> torch.Tensor:
         # sample timestep
@@ -75,18 +65,20 @@ class Trainer:
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        alphas = torch.where(batch == 1, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
-        betas = torch.where(batch == 0, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
-        distribution = distributions.Beta(alphas, betas)
-
+        # convert to inverse sigmoid
+        normal_batch = (batch - .5) * self.config.sigmoid_max * 2
+        noisy_batch = normal_batch - torch.sign(normal_batch) * self.mu_cumsum[t][:, np.newaxis, np.newaxis, np.newaxis]
+        noise = torch.randn_like(noisy_batch)
+        noisy_batch = noisy_batch * self.sqrt_alphas_cumprod[t][:, np.newaxis, np.newaxis, np.newaxis] + self.sqrt_one_minus_alphas_cumprod[t][:, np.newaxis, np.newaxis, np.newaxis] * noise
+        
         # compute loss
-        predicted = self.model(distribution.sample(), t)
+        predicted = self.model(torch.sigmoid(batch), t)
         loss = F.binary_cross_entropy_with_logits(predicted, batch)
         return loss
 
     @torch.no_grad()
     def generate_samples(self, batch_size: int) -> torch.Tensor:
-        predictions = torch.rand(
+        distribution = torch.rand(
             batch_size,
             self.dataset_config.num_instruments,
             self.dataset_config.num_pitches,
@@ -98,18 +90,13 @@ class Trainer:
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
         ):
             # create distribution
-            binary_predictions = distributions.Bernoulli(torch.sigmoid(predictions)).sample()
-            alphas = torch.ones_like(predictions)
-            betas = torch.ones_like(predictions)
-            alphas[binary_predictions == 1] = self.alphas[t]
-            betas[binary_predictions == 0] = self.alphas[t]
-            distribution = distributions.Beta(alphas, betas).sample()
-
-            predictions = self.model(distribution, t)
-        return predictions > 0
+            distribution += torch.sqrt(self.posterior_variance[t]) * torch.randn_like(distribution) - self.mu[t] * torch.sign(distribution)
+            distribution = torch.sigmoid(distribution)
+            distribution = self.model(distribution, t)
+        return distribution > 0
 
     def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):
-        wandb.init(project="coconet", config=self.config, dir=self.save_directory)
+        wandb.init(project="coconet", config=self.config, dir=self.save_directory, mode="disabled")
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
 
         # set up dataloaders
@@ -153,6 +140,7 @@ class Trainer:
             for i, sample in enumerate(samples):
                 self.dataset_config.save_pianoroll(sample.cpu().permute((2, 1, 0)).numpy(), f"{self.save_directory}/{epoch:04d}/samples/{i:02d}.mid")
             wandb.log({"train_loss": train_loss, "val_loss": val_loss})
+            break
 
 
 if __name__ == "__main__":
