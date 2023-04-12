@@ -67,8 +67,7 @@ class Trainer:
         
         # compute loss
         predicted = self.model(noisy_batch, t)
-        predicted = torch.clip(predicted, -1, 1)
-        loss = F.mse_loss(predicted, batch)
+        loss = F.huber_loss(predicted, batch)
         return loss
 
     @torch.no_grad()
