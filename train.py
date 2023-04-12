@@ -18,12 +18,11 @@ from model import Model
 @dataclass
 class TrainingConfig:
     epochs: int = 100
-    batch_size: int = 1
+    batch_size: int = 16
     learning_rate: float = 1e-4
     diffusion_timesteps: int = 300
     min_beta: float = 1e-4
     max_beta: float = 2e-2
-    sigmoid_max: float = 6.0
     save_directory: str = "checkpoints"
 
 
@@ -45,7 +44,7 @@ class Trainer:
 
         # precompute betas
         betas = torch.linspace(config.min_beta, config.max_beta, config.diffusion_timesteps)
-        alphas = torch.tensor(1. - betas)
+        alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, axis=0)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
 
@@ -53,8 +52,6 @@ class Trainer:
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod).to(self.device)
 
         self.posterior_variance = (betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)).to(self.device)
-        self.mu = (betas * config.sigmoid_max / betas.sum()).to(self.device)
-        self.mu_cumsum = torch.cumsum(self.mu, dim=0)
 
         # split into train and val
         self.dataset_config = copy(dataset_config)
@@ -63,22 +60,20 @@ class Trainer:
         # sample timestep
         t = torch.randint(0, self.timesteps, size=(len(batch),)).to(self.device)
 
-        # generate distribution
-        batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        # convert to inverse sigmoid
-        normal_batch = (batch - .5) * self.config.sigmoid_max * 2
-        noisy_batch = normal_batch - torch.sign(normal_batch) * self.mu_cumsum[t][:, np.newaxis, np.newaxis, np.newaxis]
-        noise = torch.randn_like(noisy_batch)
-        noisy_batch = noisy_batch * self.sqrt_alphas_cumprod[t][:, np.newaxis, np.newaxis, np.newaxis] + self.sqrt_one_minus_alphas_cumprod[t][:, np.newaxis, np.newaxis, np.newaxis] * noise
+        # convert distribution to [-1, 1]
+        batch = (batch.to(self.device).float().permute((0, 3, 2, 1)) * .5) * 2
+        noise = torch.randn_like(batch)
+        noisy_batch = batch * self.sqrt_alphas_cumprod[t][:, np.newaxis, np.newaxis, np.newaxis] + self.sqrt_one_minus_alphas_cumprod[t][:, np.newaxis, np.newaxis, np.newaxis] * noise
         
         # compute loss
-        predicted = self.model(torch.sigmoid(batch), t)
-        loss = F.binary_cross_entropy_with_logits(predicted, batch)
+        predicted = self.model(noisy_batch, t)
+        predicted = torch.clip(predicted, -1, 1)
+        loss = F.mse_loss(predicted, batch)
         return loss
 
     @torch.no_grad()
     def generate_samples(self, batch_size: int) -> torch.Tensor:
-        distribution = torch.rand(
+        distribution = torch.randn(
             batch_size,
             self.dataset_config.num_instruments,
             self.dataset_config.num_pitches,
@@ -90,13 +85,12 @@ class Trainer:
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
         ):
             # create distribution
-            distribution += torch.sqrt(self.posterior_variance[t]) * torch.randn_like(distribution) - self.mu[t] * torch.sign(distribution)
-            distribution = torch.sigmoid(distribution)
+            distribution += torch.sqrt(self.posterior_variance[t]) * torch.randn_like(distribution)
             distribution = self.model(distribution, t)
         return distribution > 0
 
     def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):
-        wandb.init(project="coconet", config=self.config, dir=self.save_directory, mode="disabled")
+        wandb.init(project="coconet", config=self.config, dir=self.save_directory)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
 
         # set up dataloaders
@@ -140,7 +134,6 @@ class Trainer:
             for i, sample in enumerate(samples):
                 self.dataset_config.save_pianoroll(sample.cpu().permute((2, 1, 0)).numpy(), f"{self.save_directory}/{epoch:04d}/samples/{i:02d}.mid")
             wandb.log({"train_loss": train_loss, "val_loss": val_loss})
-            break
 
 
 if __name__ == "__main__":
