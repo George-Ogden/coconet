@@ -4,6 +4,7 @@ from accelerate import Accelerator
 import torch.utils.data as data
 import torch.nn.functional as F
 import torch.nn as nn
+import numpy as np
 import torch
 
 from copy import copy
@@ -17,10 +18,10 @@ from data.dataset import Jsb16thSeparatedDataset, Jsb16thSeparatedDatasetFactory
 
 @dataclass
 class TrainingConfig:
-    epochs: int = 100
-    batch_size: int = 16
+    epochs: int = 1000
+    batch_size: int = 8
     learning_rate: float = 1e-4
-    diffusion_timesteps: int = 300
+    diffusion_timesteps: int = 1000
     beta_schedule: str = "linear"
     prediction_type: str = "epsilon"
     save_directory: str = "checkpoints"
@@ -134,43 +135,45 @@ class Trainer:
                 progress_bar.set_postfix(**logs)
                 self.accelerator.log(logs, step=global_step)
 
-            # Generate sample images for visual inspection
-            unet = self.accelerator.unwrap_model(self.model)
+            if (epoch + 1) % 10 == 0:
+                # Generate sample images for visual inspection
+                unet = self.accelerator.unwrap_model(self.model)
 
-            pipeline = DDPMPipeline(
-                unet=unet,
-                scheduler=self.noise_scheduler,
-            )
+                pipeline = DDPMPipeline(
+                    unet=unet,
+                    scheduler=self.noise_scheduler,
+                )
 
-            generator = torch.Generator(device=pipeline.device).manual_seed(0)
-            # run pipeline in inference (sample random noise and denoise)
-            images = pipeline(
-                generator=generator,
-                batch_size=10,
-                num_inference_steps=self.config.diffusion_timesteps,
-                output_type="numpy",
-            ).images
+                generator = torch.Generator(device=pipeline.device).manual_seed(0)
+                # run pipeline in inference (sample random noise and denoise)
+                images = pipeline(
+                    generator=generator,
+                    batch_size=10,
+                    num_inference_steps=self.config.diffusion_timesteps,
+                    output_type="numpy",
+                ).images
 
-            # denormalize the images and save to tensorboard
-            images_processed = (images * 255).round().astype("uint8")
+                # denormalize the images and save to tensorboard
+                images_processed = (images * 255).round().astype("uint8")
+                images_processed = np.expand_dims(images_processed.max(axis=-1), -1)
 
-            # Upcoming `log_images` helper coming in https://github.com/huggingface/accelerate/pull/962/files
-            self.accelerator.get_tracker("wandb").log(
-                {"test_samples": [wandb.Image(img) for img in images_processed], "epoch": epoch},
-                step=global_step,
-            )
+                # Upcoming `log_images` helper coming in https://github.com/huggingface/accelerate/pull/962/files
+                self.accelerator.get_tracker("wandb").log(
+                    {"test_samples": [wandb.Image(img) for img in images_processed]},
+                    step=global_step,
+                )
 
-            # save the model
-            unet = self.accelerator.unwrap_model(self.model)
+                # save the model
+                unet = self.accelerator.unwrap_model(self.model)
 
-            pipeline = DDPMPipeline(
-                unet=unet,
-                scheduler=self.noise_scheduler,
-            )
+                pipeline = DDPMPipeline(
+                    unet=unet,
+                    scheduler=self.noise_scheduler,
+                )
 
-            pipeline.save_pretrained(self.config.save_directory)
-            for i, sample in enumerate(images_processed):
-                self.dataset_config.save_pianoroll((sample > 0).transpose((2, 1, 0)), f"{self.save_directory}/{epoch:04d}-{i:02d}.mid")
+                pipeline.save_pretrained(self.config.save_directory)
+                for i, sample in enumerate(images):
+                    self.dataset_config.save_pianoroll((sample > .5).transpose((1, 0, 2)), f"{self.save_directory}/{epoch:04d}-{i:02d}.mid")
 
         self.accelerator.end_training()
 
