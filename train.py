@@ -4,13 +4,13 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 import torch
-import math
 
 from copy import copy
 from tqdm import tqdm
 import wandb
 
 from dataclasses import dataclass
+from typing import Union
 import os
 
 from data.dataset import Jsb16thSeparatedDataset, Jsb16thSeparatedDatasetFactory, DatasetInfo
@@ -21,10 +21,10 @@ from model import Model
 class TrainingConfig:
     epochs: int = 100
     batch_size: int = 16
-    learning_rate: float = 1e-4
-    diffusion_timesteps: int = 300
-    min_beta: float = 1e-4
-    max_beta: float = 1e-2
+    learning_rate: float = 1e-2
+    timesteps: int = 100
+    min_beta: float = 1e-2
+    max_beta: float = 9e-1
     save_directory: str = "checkpoints"
 
 
@@ -41,14 +41,11 @@ class Trainer:
         # save config and model
         self.model = model.to(self.device)
         self.config = copy(config)
-        self.timesteps = config.diffusion_timesteps
+        self.timesteps = config.timesteps
         self.save_directory = config.save_directory
 
         # precompute flipping probabilities
         self.probabilities = torch.linspace(config.min_beta, config.max_beta, self.timesteps).to(self.device)
-        self.cumulative_probabilities = (
-            1 - torch.cumprod((1 - self.probabilities), dim=0)
-        )
 
         # split into train and val
         self.dataset_config = copy(dataset_config)
@@ -57,43 +54,60 @@ class Trainer:
     def select(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         return torch.index_select(x, 0, idx)
 
+    def mask(self, x: torch.Tensor, p: Union[torch.Tensor, float]) -> torch.Tensor:
+        # convert probs to tensor
+        if isinstance(p, float) or p.ndim == 0:
+            p = torch.tensor([p] * len(x), device=self.device)
+        # create mask with bernoulli
+        p = torch.tile(p[(slice(None),) + (np.newaxis,) * (x.ndim - 1)], (1, *x.shape[1:]))
+        mask = distributions.Bernoulli(p).sample()
+        # apply mask and generate random values over mask
+        y = torch.cat(
+            (
+                torch.where(
+                    mask.bool(),
+                    distributions.Bernoulli(torch.ones_like(x) / 2).sample(),
+                    x,
+                ),
+                mask
+            ),
+            dim=1
+        )
+        return y
+
     def compute_loss(self, batch: torch.Tensor) -> torch.Tensor:
         # sample timestep
         t = torch.randint(0, self.timesteps, size=(len(batch),)).to(self.device)
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        uncorrupted = batch.clone()
-        p = self.select(self.cumulative_probabilities, t)[:, np.newaxis, np.newaxis, np.newaxis].tile((1,) + batch.shape[1:])
-        distribution = distributions.Bernoulli(p)
-        corrupted = distribution.sample().bool()
-        batch[corrupted] = distributions.Bernoulli(torch.ones_like(batch[corrupted]) / 2).sample()
-
+        p = self.select(self.probabilities, t)
+        
         # compute loss
-        predicted = self.model(distribution.sample(), t)
-        loss = F.binary_cross_entropy_with_logits(predicted, uncorrupted)
+        predicted = self.model(self.mask(batch, p))
+        loss = F.binary_cross_entropy_with_logits(predicted, batch)
         return loss
 
     @torch.no_grad()
     def generate_samples(self, batch_size: int) -> torch.Tensor:
-        distribution = distributions.Bernoulli(
-            torch.ones(
+        distribution = self.mask(
+            torch.zeros(
                 (batch_size, self.dataset_config.num_instruments, self.dataset_config.num_pitches, self.dataset_config.piece_length),
                 device=self.device,
                 dtype=torch.float32,
-            ) / 2
-        ).sample()
+            ),
+            1.
+        )
         for t in tqdm(
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
         ):
-            # corrupt some values
-            p = self.probabilities[t][(np.newaxis,) * distribution.ndim].tile(distribution.shape)
-            corrupted = distributions.Bernoulli(p).sample().bool()
-            distribution[corrupted] = distributions.Bernoulli(torch.ones_like(distribution[corrupted]) / 2).sample()
-            # clamp to [0, 1]
+            # predict distribution
             distribution = distributions.Bernoulli(
-                F.sigmoid(self.model(distribution, t))
+                F.sigmoid(self.model(distribution))
             ).sample()
+            if t > 0:
+                # mask some notes
+                distribution = self.mask(distribution, self.probabilities[t])
         return distribution
 
     def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):

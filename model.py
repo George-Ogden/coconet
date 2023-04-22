@@ -3,8 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from diffusers.models.embeddings import Timesteps, TimestepEmbedding
-
 from data.dataset import DatasetInfo
 from typing import Tuple, Union
 
@@ -43,7 +41,6 @@ class Model(nn.Module):
     normal_conv_layers = 2
     num_dilation_blocks = 3
     filters = 128
-    time_embedding_size = 128
 
     def __init__(self, info: DatasetInfo = DatasetInfo()):
         super().__init__()
@@ -54,22 +51,13 @@ class Model(nn.Module):
                 *self._make_output_layers(info),
             ]
         )
-        self.time_embedding = Timesteps(
-            num_channels=self.time_embedding_size,
-            flip_sin_to_cos=True,
-            downscale_freq_shift=0
-        )
-        self.time_projection = TimestepEmbedding(
-            in_channels=self.time_embedding_size,
-            time_embed_dim=info.piece_length * info.num_pitches
-        )
 
     def _make_input_layers(self, info: DatasetInfo):
         return nn.ModuleList(
             [
                 nn.Sequential(
                     nn.Conv2d(
-                        in_channels=info.num_instruments + 1,
+                        in_channels=info.num_instruments  * 2,
                         out_channels=self.filters,
                         kernel_size=3,
                         dilation=1,
@@ -127,18 +115,7 @@ class Model(nn.Module):
             ]
         )
 
-    def forward(self, pianoroll: torch.Tensor, t: Union[int, torch.Tensor]) -> torch.Tensor:
-        # convert time embedding to tensor if necessary
-        if isinstance(t, int):
-            t = torch.tensor([t] * len(pianoroll), device=pianoroll.device)
-        # create time embedding same shape as pianoroll
-        time_embedding = self.time_embedding(t)
-        time_projection = self.time_projection(time_embedding)
-        time_projection = time_projection.reshape((len(pianoroll), 1, *pianoroll.shape[2:]))
-
-        # concatenate pianoroll with time embedding
-        pianoroll = torch.cat([pianoroll, time_projection], dim=1)
-
+    def forward(self, pianoroll: torch.Tensor) -> torch.Tensor:
         skip = (0, pianoroll)
         for i, layer in enumerate(self.layers):
             # pass through layer
