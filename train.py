@@ -23,7 +23,8 @@ class TrainingConfig:
     batch_size: int = 16
     learning_rate: float = 1e-4
     diffusion_timesteps: int = 300
-    sigma: float = 3
+    min_beta: float = 1e-4
+    max_beta: float = 1e-2
     save_directory: str = "checkpoints"
 
 
@@ -43,17 +44,11 @@ class Trainer:
         self.timesteps = config.diffusion_timesteps
         self.save_directory = config.save_directory
 
-        # precompute betas
-        variance = torch.tensor(
-            (
-                np.exp(-np.linspace(0, config.sigma, self.timesteps)[::-1])
-            ) / config.sigma ** 2,
-            dtype=torch.float32
-        ).to(
-            self.device
-        ) + 1e-8
-        self.step_sizes = torch.sqrt(torch.diff(variance, prepend=torch.zeros(1, device=self.device)))
-        self.std = torch.sqrt(variance)
+        # precompute flipping probabilities
+        self.probabilities = torch.linspace(config.min_beta, config.max_beta, self.timesteps).to(self.device)
+        self.cumulative_probabilities = (
+            1 - torch.cumprod((1 - self.probabilities), dim=0)
+        )
 
         # split into train and val
         self.dataset_config = copy(dataset_config)
@@ -68,39 +63,38 @@ class Trainer:
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        std = self.select(self.std, t)[:, np.newaxis, np.newaxis, np.newaxis].tile((1,) + batch.shape[1:])
-        distribution = distributions.HalfNormal(std)
-        displacements = torch.minimum(distribution.sample(), torch.ones((), device=self.device))
-        displacements[batch == 1] *= -1
-        batch += displacements
+        uncorrupted = batch.clone()
+        p = self.select(self.cumulative_probabilities, t)[:, np.newaxis, np.newaxis, np.newaxis].tile((1,) + batch.shape[1:])
+        distribution = distributions.Bernoulli(p)
+        corrupted = distribution.sample().bool()
+        batch[corrupted] = distributions.Bernoulli(torch.ones_like(batch[corrupted]) / 2).sample()
 
         # compute loss
-        predicted = F.tanh(self.model(distribution.sample(), t))
-        loss = F.mse_loss(predicted, displacements)
+        predicted = self.model(distribution.sample(), t)
+        loss = F.binary_cross_entropy_with_logits(predicted, uncorrupted)
         return loss
 
     @torch.no_grad()
     def generate_samples(self, batch_size: int) -> torch.Tensor:
-        distribution = torch.rand(
-            batch_size,
-            self.dataset_config.num_instruments,
-            self.dataset_config.num_pitches,
-            self.dataset_config.piece_length,
-            device=self.device,
-            dtype=torch.float32,
-        )
+        distribution = distributions.Bernoulli(
+            torch.ones(
+                (batch_size, self.dataset_config.num_instruments, self.dataset_config.num_pitches, self.dataset_config.piece_length),
+                device=self.device,
+                dtype=torch.float32,
+            ) / 2
+        ).sample()
         for t in tqdm(
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
         ):
-            # add noise
-            distribution += torch.randn_like(distribution) * self.step_sizes[t] / 2
+            # corrupt some values
+            p = self.probabilities[t][(np.newaxis,) * distribution.ndim].tile(distribution.shape)
+            corrupted = distributions.Bernoulli(p).sample().bool()
+            distribution[corrupted] = distributions.Bernoulli(torch.ones_like(distribution[corrupted]) / 2).sample()
             # clamp to [0, 1]
-            distribution = torch.clamp(distribution, 0, 1)
-            # predict displacements
-            predictions = F.tanh(self.model(distribution, t))
-            # add displacements
-            distribution -= predictions
-        return distribution > .5
+            distribution = distributions.Bernoulli(
+                F.sigmoid(self.model(distribution, t))
+            ).sample()
+        return distribution
 
     def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):
         wandb.init(project="coconet", config=self.config, dir=self.save_directory)
