@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 import torch
+import math
 
 from copy import copy
 from tqdm import tqdm
@@ -19,11 +20,10 @@ from model import Model
 @dataclass
 class TrainingConfig:
     epochs: int = 100
-    batch_size: int = 8
+    batch_size: int = 16
     learning_rate: float = 1e-4
     diffusion_timesteps: int = 300
-    min_beta: float = 1e-3
-    max_beta: float = 0.5
+    sigma: float = 3
     save_directory: str = "checkpoints"
 
 
@@ -44,23 +44,16 @@ class Trainer:
         self.save_directory = config.save_directory
 
         # precompute betas
-        uncertainties = np.exp(np.linspace(np.log(config.min_beta), np.log(config.max_beta), config.diffusion_timesteps))
-        certainties = 1 - uncertainties
-        cumprod_certainties = np.concatenate(((1,), np.cumprod(certainties)))
-        delta_alphas = 0.5 + cumprod_certainties / 2
-        self.alphas = torch.tensor(
-            (1 + certainties) / (1 - certainties), dtype=torch.float32
+        variance = torch.tensor(
+            (
+                np.exp(-np.linspace(0, config.sigma, self.timesteps)[::-1])
+            ) / config.sigma ** 2,
+            dtype=torch.float32
         ).to(
             self.device
-        )
-        self.cumulative_alphas = torch.tensor(
-            delta_alphas / (1 - delta_alphas), dtype=torch.float32
-        ).to(
-            self.device
-        )
-        # limit numerical instability
-        self.alphas[self.alphas > 1e3] = 1e3
-        self.cumulative_alphas[self.cumulative_alphas > 1e3] = 1e3
+        ) + 1e-8
+        self.step_sizes = torch.sqrt(torch.diff(variance, prepend=torch.zeros(1, device=self.device)))
+        self.std = torch.sqrt(variance)
 
         # split into train and val
         self.dataset_config = copy(dataset_config)
@@ -75,18 +68,20 @@ class Trainer:
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        alphas = torch.where(batch == 1, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
-        betas = torch.where(batch == 0, self.cumulative_alphas[t][:, np.newaxis, np.newaxis, np.newaxis], torch.ones_like(batch))
-        distribution = distributions.Beta(alphas, betas)
+        std = self.select(self.std, t)[:, np.newaxis, np.newaxis, np.newaxis].tile((1,) + batch.shape[1:])
+        distribution = distributions.HalfNormal(std)
+        displacements = torch.minimum(distribution.sample(), torch.ones((), device=self.device))
+        displacements[batch == 1] *= -1
+        batch += displacements
 
         # compute loss
-        predicted = self.model(distribution.sample(), t)
-        loss = F.binary_cross_entropy_with_logits(predicted, batch)
+        predicted = F.tanh(self.model(distribution.sample(), t))
+        loss = F.mse_loss(predicted, displacements)
         return loss
 
     @torch.no_grad()
     def generate_samples(self, batch_size: int) -> torch.Tensor:
-        predictions = torch.rand(
+        distribution = torch.rand(
             batch_size,
             self.dataset_config.num_instruments,
             self.dataset_config.num_pitches,
@@ -97,16 +92,15 @@ class Trainer:
         for t in tqdm(
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
         ):
-            # create distribution
-            binary_predictions = distributions.Bernoulli(torch.sigmoid(predictions)).sample()
-            alphas = torch.ones_like(predictions)
-            betas = torch.ones_like(predictions)
-            alphas[binary_predictions == 1] = self.alphas[t]
-            betas[binary_predictions == 0] = self.alphas[t]
-            distribution = distributions.Beta(alphas, betas).sample()
-
-            predictions = self.model(distribution, t)
-        return predictions > 0
+            # add noise
+            distribution += torch.randn_like(distribution) * self.step_sizes[t] / 2
+            # clamp to [0, 1]
+            distribution = torch.clamp(distribution, 0, 1)
+            # predict displacements
+            predictions = F.tanh(self.model(distribution, t))
+            # add displacements
+            distribution -= predictions
+        return distribution > .5
 
     def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):
         wandb.init(project="coconet", config=self.config, dir=self.save_directory)
