@@ -7,10 +7,11 @@ dataset_config = DatasetInfo()
 training_config = TrainingConfig()
 
 save_directory = "generated"
+model_directory = "pretrained"
 
 if __name__ == "__main__":
     model = torch.load(
-        f"{training_config.save_directory}/{training_config.epochs-1:04}/model.pth"
+        f"{model_directory}/model.pth"
     )
     trainer = Trainer(
         model,
