@@ -51,15 +51,25 @@ class Trainer:
         self.dataset_config = copy(dataset_config)
 
     @staticmethod
-    def select(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
+    def _select(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         return torch.index_select(x, 0, idx)
 
-    def mask(
+    def _mask(
         self,
         x: torch.Tensor,
         p: Union[torch.Tensor, float],
         supermask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        """convert a pianoroll to a masked pianoroll
+
+        Args:
+            x (torch.Tensor): input pianoroll
+            p (Union[torch.Tensor, float]): probabilities of masking each note
+            supermask (Optional[torch.Tensor], optional): information about which notes to not mask out (zeros are never masked). Defaults to None.
+
+        Returns:
+            torch.Tensor: _description_
+        """
         # convert probs to tensor
         if isinstance(p, float) or p.ndim == 0:
             p = torch.tensor([p] * len(x), device=self.device)
@@ -83,16 +93,16 @@ class Trainer:
         )
         return y
 
-    def compute_loss(self, batch: torch.Tensor) -> torch.Tensor:
+    def _compute_loss(self, batch: torch.Tensor) -> torch.Tensor:
         # sample timestep
         t = torch.randint(0, self.timesteps, size=(len(batch),)).to(self.device)
 
         # generate distribution
         batch = batch.to(self.device).float().permute((0, 3, 2, 1))
-        p = self.select(self.probabilities, t)
+        p = self._select(self.probabilities, t)
         
         # compute loss
-        predicted = self.model(self.mask(batch, p))
+        predicted = self.model(self._mask(batch, p))
         loss = F.binary_cross_entropy_with_logits(predicted, batch)
         return loss
 
@@ -131,12 +141,13 @@ class Trainer:
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
         ):  
             # mask some notes
-            pianoroll = self.mask(pianoroll, self.probabilities[t], supermask=supermask)
+            pianoroll = self._mask(pianoroll, self.probabilities[t], supermask=supermask)
             # predict distribution
             pianoroll = distributions.Bernoulli(
                 F.sigmoid(self.model(pianoroll))
             ).sample()
             if original_pianoroll is not None and supermask is not None:
+                # restore original notes
                 pianoroll[batch_supermask] = torch.maximum(pianoroll[batch_supermask], original_pianoroll[batch_supermask])
         return pianoroll.bool()
 
@@ -160,7 +171,7 @@ class Trainer:
             train_loss = 0.
             for batch in tqdm(self.train_loader, desc="Training", total=len(self.train_loader)):
                 optimizer.zero_grad()
-                loss = self.compute_loss(batch)
+                loss = self._compute_loss(batch)
                 train_loss += loss.detach().cpu().item()
                 loss.backward()
                 optimizer.step()
@@ -173,7 +184,7 @@ class Trainer:
                 # randomly seed for repeatable loss
                 torch.random.manual_seed(0)
                 for batch in tqdm(self.val_loader, desc="Validating", total=len(self.val_loader)):
-                    val_loss += self.compute_loss(batch).item()
+                    val_loss += self._compute_loss(batch).item()
             val_loss /= len(self.val_loader)
 
             # generate samples
@@ -188,12 +199,16 @@ class Trainer:
 
 
 if __name__ == "__main__":
+    # set up dataset
     factory = Jsb16thSeparatedDatasetFactory()
+    # set up model
     model = Model(factory.info)
+    # set up trainer
     trainer = Trainer(
         model,
         config=TrainingConfig(),
         dataset_config=factory.info,
     )
 
+    # train
     trainer.train(factory.train_dataset, factory.val_dataset)

@@ -7,8 +7,8 @@ from data.dataset import DatasetInfo
 from typing import Tuple, Union
 
 
-# modified from https://stackoverflow.com/a/65155106/12103577
 class SeparableConv2d(nn.Module):
+    # modified from https://stackoverflow.com/a/65155106/12103577
     def __init__(
         self,
         in_channels: int,
@@ -43,6 +43,7 @@ class Model(nn.Module):
     filters = 128
 
     def __init__(self, info: DatasetInfo = DatasetInfo()):
+        """CNN based on original coconet paper"""
         super().__init__()
         self.layers = nn.ModuleList(
             [
@@ -75,6 +76,7 @@ class Model(nn.Module):
         max_dilation_level = max(max_time_dilation, max_pitch_dilation)
         for _ in range(self.num_dilation_blocks):
             for level in range(max_dilation_level + 1):
+                # dilate in powers of 2
                 time_dilation = 2 ** min(level, max_time_dilation)
                 pitch_dilation = 2 ** min(level, max_pitch_dilation)
                 blocks.append(
