@@ -1,30 +1,38 @@
 from train import Trainer, TrainingConfig
 from data.dataset import DatasetInfo
 
-import pypianoroll as pr
-import pretty_midi
 import numpy as np
 import torch
+
+import pretty_midi
+import os
 
 dataset_config = DatasetInfo()
 training_config = TrainingConfig()
 
 save_directory = "harmonised"
-input_midi = "lamb.mid"
+input_midi = "input.mid"
 model_directory = "pretrained"
+# tracks are the index of the track in the midi, None means to be generated
 tracks = [0, None, None, None]
 
 if __name__ == "__main__":
+    if not os.path.exists(save_directory):
+        os.mkdir(save_directory)
+
+    # load model
     model = torch.load(
         f"{model_directory}/model.pth"
     )
+    # create trainer
     trainer = Trainer(
         model,
         config=TrainingConfig(),
         dataset_config=dataset_config
     )
+    # load midi
     midi = pretty_midi.PrettyMIDI(input_midi)
-    # dataset_config.qpm = midi.estimate_tempo()
+    # convert midi to pianoroll
     pianoroll = np.stack(
         [
             instrument.get_piano_roll(fs=dataset_config.bpm / 60 * dataset_config.resolution)
@@ -41,7 +49,7 @@ if __name__ == "__main__":
         ],
         axis=0
     )
-    pianoroll = pianoroll[:, dataset_config.min_pitch-12:dataset_config.max_pitch + 1-12]
+    # create a mask over selected tracks
     supermask = np.stack(
         [
             np.ones_like(pianoroll[i])
@@ -51,7 +59,9 @@ if __name__ == "__main__":
         ],
         axis=0
     )
-    samples = trainer.generate_samples(1, original_pianoroll=pianoroll, supermask=supermask)
+    # harmonise samples
+    samples = trainer.generate_samples(16, original_pianoroll=pianoroll, supermask=supermask)
+    # save each sample
     for i, sample in enumerate(samples):
         dataset_config.save_pianoroll(
             sample.cpu().permute(
