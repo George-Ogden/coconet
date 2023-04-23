@@ -1,6 +1,5 @@
 from train import Trainer, TrainingConfig
 from data.dataset import DatasetInfo
-from model import Model
 
 import torch
 

@@ -18,10 +18,10 @@ class DatasetInfo:
     name: str = "Jsb16thSeparated"
     min_pitch: int = 36
     max_pitch: int = 81
-    shortest_duration: float = 0.125
+    resolution: float = 16 # 16th notes
     num_instruments: int = 4
     piece_length: int = 64
-    qpm: int = 60
+    bpm: int = 15
 
     @property
     def num_pitches(self):
@@ -30,7 +30,7 @@ class DatasetInfo:
     def save_pianoroll(self, pianoroll: np.ndarray, filename: str):
         pianoroll = np.pad(pianoroll, ((0, 0), (self.min_pitch, 127-self.max_pitch), (0, 0)), mode="constant", constant_values=0)
         tracks = [pr.BinaryTrack(pianoroll=track) for track in pianoroll.transpose(2, 0, 1)]
-        multitrack = pr.Multitrack(tracks=tracks, tempo=self.qpm / 4, resolution=16)
+        multitrack = pr.Multitrack(tracks=tracks, tempo=self.bpm, resolution=self.resolution // 2)
         multitrack.write(filename)
     
     def to_pianoroll(
@@ -50,9 +50,9 @@ class Jsb16thSeparatedDataset(Dataset):
 
         self.min_pitch = info.min_pitch
         self.max_pitch = info.max_pitch
-        self.shortest_duration = info.shortest_duration
+        self.resolution = info.resolution
         self.num_instruments = info.num_instruments
-        self.qpm = info.qpm
+        self.qpm = info.bpm
 
         self.data = [self.info.to_pianoroll(piece) for piece in data]
 

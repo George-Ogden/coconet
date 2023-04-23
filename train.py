@@ -9,8 +9,8 @@ from copy import copy
 from tqdm import tqdm
 import wandb
 
+from typing import Optional, Union
 from dataclasses import dataclass
-from typing import Union
 import os
 
 from data.dataset import Jsb16thSeparatedDataset, Jsb16thSeparatedDatasetFactory, DatasetInfo
@@ -24,7 +24,7 @@ class TrainingConfig:
     learning_rate: float = 1e-2
     timesteps: int = 100
     min_beta: float = 1e-2
-    max_beta: float = 9e-1
+    max_beta: float = 1.
     save_directory: str = "checkpoints"
 
 
@@ -54,22 +54,30 @@ class Trainer:
     def select(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         return torch.index_select(x, 0, idx)
 
-    def mask(self, x: torch.Tensor, p: Union[torch.Tensor, float]) -> torch.Tensor:
+    def mask(
+        self,
+        x: torch.Tensor,
+        p: Union[torch.Tensor, float],
+        supermask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # convert probs to tensor
         if isinstance(p, float) or p.ndim == 0:
             p = torch.tensor([p] * len(x), device=self.device)
         # create mask with bernoulli
         p = torch.tile(p[(slice(None),) + (np.newaxis,) * (x.ndim - 1)], (1, *x.shape[1:]))
-        mask = distributions.Bernoulli(p).sample()
+        mask = distributions.Bernoulli(p).sample().bool()
+        # apply supermask
+        if supermask is not None:
+            mask &= supermask.unsqueeze(0)
         # apply mask and generate random values over mask
         y = torch.cat(
             (
                 torch.where(
-                    mask.bool(),
+                    mask,
                     distributions.Bernoulli(torch.ones_like(x) / 2).sample(),
                     x,
                 ),
-                mask
+                mask.float()
             ),
             dim=1
         )
@@ -89,26 +97,48 @@ class Trainer:
         return loss
 
     @torch.no_grad()
-    def generate_samples(self, batch_size: int) -> torch.Tensor:
-        distribution = self.mask(
-            torch.zeros(
-                (batch_size, self.dataset_config.num_instruments, self.dataset_config.num_pitches, self.dataset_config.piece_length),
-                device=self.device,
-                dtype=torch.float32,
-            ),
-            1.
-        )
+    def generate_samples(
+        self,
+        num_samples: int = 1,
+        original_pianoroll: Optional[Union[torch.Tensor, np.ndarray]] = None,
+        supermask: Optional[Union[torch.Tensor, np.ndarray]] = None
+    ) -> torch.Tensor:
+        # setup pianoroll and supermask
+        if original_pianoroll is None:
+            pianoroll = distributions.Bernoulli(
+                torch.ones(
+                    (num_samples, self.dataset_config.num_instruments, self.dataset_config.num_pitches, self.dataset_config.piece_length),
+                    device=self.device,
+                    dtype=torch.float32
+                ) / 2
+            ).sample()
+        else:
+            if not isinstance(original_pianoroll, torch.Tensor):
+                original_pianoroll = torch.tensor(original_pianoroll, device=self.device, dtype=torch.float32)
+            original_pianoroll = torch.tile(
+                original_pianoroll[np.newaxis],
+                (num_samples,) + (1,) * original_pianoroll.ndim
+            )
+            pianoroll = original_pianoroll.clone()
+
+        if supermask is not None:
+            if not isinstance(supermask, torch.Tensor):
+                supermask = torch.tensor(supermask, device=self.device, dtype=torch.bool)
+            batch_supermask = ~supermask.unsqueeze(0).tile((num_samples,) + (1,) * supermask.ndim)
+
+        # generate samples
         for t in tqdm(
             reversed(range(self.timesteps)), desc="Generating", total=self.timesteps
-        ):
+        ):  
+            # mask some notes
+            pianoroll = self.mask(pianoroll, self.probabilities[t], supermask=supermask)
             # predict distribution
-            distribution = distributions.Bernoulli(
-                F.sigmoid(self.model(distribution))
+            pianoroll = distributions.Bernoulli(
+                F.sigmoid(self.model(pianoroll))
             ).sample()
-            if t > 0:
-                # mask some notes
-                distribution = self.mask(distribution, self.probabilities[t])
-        return distribution
+            if original_pianoroll is not None and supermask is not None:
+                pianoroll[batch_supermask] = torch.maximum(pianoroll[batch_supermask], original_pianoroll[batch_supermask])
+        return pianoroll.bool()
 
     def train(self, train_dataset: Jsb16thSeparatedDataset, val_dataset: Jsb16thSeparatedDataset):
         wandb.init(project="coconet", config=self.config, dir=self.save_directory)
